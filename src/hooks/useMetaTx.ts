@@ -99,7 +99,11 @@ export function useMetaTx() {
       // body.permit (posting) BEFORE body.fee_permit, so nonces are:
       // posting = base N, fee = N+1 — the reverse of the old eager order.
       let needFeePermit = false;
-      const APPROVAL_AMOUNT = BigInt("10000000000000000000000"); // 10,000 VSP
+      // security review 2026-09 (C1 blast radius): the standing fee permit
+      // was 10,000 VSP per user. With the forwarder drain fixed this is
+      // defense in depth — a bug in that path now costs at most 100 VSP per
+      // user, at the price of re-signing after ~20 relayed actions.
+      const APPROVAL_AMOUNT = BigInt("100000000000000000000"); // 100 VSP
       if (addresses.Forwarder) {
         const currentAllowance = (await publicClient.readContract({
           address: addresses.VSPToken as Address,
