@@ -46,7 +46,11 @@ export class ProtocolClient {
   readonly addresses: ContractAddresses;
 
   constructor(opts: ProtocolClientOpts) {
-    const chain = CHAINS[opts.chainId ?? 43113] ?? avalancheFuji;
+    // Review 3 (2026-09-10): fail CLOSED on an unknown chain id — silently
+    // falling back to Fuji would transact against a surprising network.
+    const requestedChainId = opts.chainId ?? 43113;
+    const chain = CHAINS[requestedChainId];
+    if (!chain) throw new Error(`Unsupported chain ID ${requestedChainId}`);
 
     this.publicClient = createPublicClient({
       chain,
