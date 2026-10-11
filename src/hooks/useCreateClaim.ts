@@ -61,11 +61,10 @@ export function useCreateClaim() {
         API_BASE, userAddress, addresses.PostRegistry,
       );
       if (currentAllowance >= DEFAULT_POSTING_FEE) return undefined;
-      window.dispatchEvent(new CustomEvent("verisphere:toast", { detail: { message: "Step 1: Approve token access (sign in wallet)", type: "info" } }));
       return {
         tokenAddress: addresses.VSPToken as Address,
         spender: addresses.PostRegistry as Address,
-        value: DEFAULT_POSTING_FEE * 10n,
+        value: DEFAULT_POSTING_FEE * 100n,  // patch_protocol_gas_fee: standing allowance for 100 posts, one prompt
       };
     },
     [userAddress, publicClient, walletClient, chain],

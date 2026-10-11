@@ -46,9 +46,15 @@ export {
   fetchBalance,
   checkClaimOnChain,
   fetchPostingFee,
+  fetchFeePolicy,   // patch_protocol_gas_fee
+  fetchFeeQuote,    // patch_protocol_gas_fee
+  walletPrompt,     // patch_protocol_gas_fee
 } from "./hooks/index.js";
 export type {
   RelayResponse,
   ClaimState,
   WriteHookState,
+  FeePolicy,            // patch_protocol_gas_fee
+  FeeQuote,             // patch_protocol_gas_fee
+  WalletPromptDetail,   // patch_protocol_gas_fee
 } from "./hooks/index.js";

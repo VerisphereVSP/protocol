@@ -10,5 +10,7 @@ export type { TxConfirmationDetail, TxConfirmationStatus, WaitForTxConfirmationO
 export { useCreateClaim } from "./useCreateClaim.js";
 export { useCreateLink } from "./useCreateLink.js";
 export { useStake } from "./useStake.js";
-export { fetchAllowance, fetchBalance, checkClaimOnChain, signPermit, fetchPostingFee } from "./relay.js";
+export { fetchAllowance, fetchBalance, checkClaimOnChain, signPermit, fetchPostingFee, fetchFeePolicy, fetchFeeQuote } from "./relay.js";  // patch_protocol_gas_fee
+export type { FeePolicy, FeeQuote } from "./relay.js";
+export { walletPrompt, type WalletPromptDetail } from "./walletPrompt.js";  // patch_protocol_gas_fee
 export type { RelayResponse, ClaimState, WriteHookState, PermitData } from "./types.js";

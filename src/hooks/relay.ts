@@ -299,6 +299,7 @@ export interface AsyncRelayResponse {
   action_type: string;
   action_value: number | null;
   status: "submitted" | "duplicate_claim";
+  fee_vsp?: number;  // patch_protocol_gas_fee: what the user pays, collected after confirmation
   // For duplicate_claim case:
   claim?: {
     post_id: number;
@@ -309,18 +310,93 @@ export interface AsyncRelayResponse {
   };
 }
 
+// ── patch_protocol_gas_fee: the relay's gas-indexed fee ───────────────────────
+// The fee is the relay's gas cost in VSP × one markup knob, quoted by the relay
+// before the user signs and collected by the relay (never by a contract) after
+// the action confirms. The client shows the quote and sends the number it
+// displayed back as fee_quote_vsp; the relay never charges more than that.
+
+export interface FeePolicy {
+  /** The address the standing fee allowance is granted to (the relay wallet). */
+  collector: string;
+  token: string;
+  enabled: boolean;
+  markup: number;
+  cap_vsp: number;
+  basis: string;
+}
+
+export interface FeeQuote {
+  fee_total_vsp: number;   // what the user pays for this action
+  fee_usd: number;
+  fee_vsp: number;         // the relay's own part (the rest, if any, is the Forwarder's during transition)
+  onchain_fee_vsp: number;
+  gas_units: number;
+  gas_price_gwei: number;
+  avax_price_usd: number;
+  vsp_price_usd: number;
+  markup: number;
+  capped: boolean;
+  enabled: boolean;
+  action_type?: string;
+  collector?: string;
+  valid_for_sec?: number;
+}
+
+const feePolicyCache: { policy: FeePolicy | null; ts: number } = { policy: null, ts: 0 };
+
+/** The relay's fee policy (collector address, knob). Cached 5 minutes. Returns
+ *  null on an older backend without the endpoint, so callers can fall back. */
+export async function fetchFeePolicy(apiBase: string): Promise<FeePolicy | null> {
+  if (feePolicyCache.policy && Date.now() - feePolicyCache.ts < 300_000) return feePolicyCache.policy;
+  try {
+    const res = await fetch(`${apiBase}/relay/fee-policy`);
+    if (!res.ok) return null;
+    const policy = (await res.json()) as FeePolicy;
+    if (!policy?.collector) return null;
+    feePolicyCache.policy = policy;
+    feePolicyCache.ts = Date.now();
+    return policy;
+  } catch {
+    return null;
+  }
+}
+
+/** The fee the relay will charge for this action, before the user signs.
+ *  null when the relay cannot quote right now (the submission then decides). */
+export async function fetchFeeQuote(
+  apiBase: string,
+  to: string,
+  calldata: string,
+  from?: string,
+): Promise<FeeQuote | null> {
+  try {
+    const qs = new URLSearchParams({ to, calldata });
+    if (from) qs.set("from", from);
+    const res = await fetch(`${apiBase}/relay/estimate-fee?${qs.toString()}`);
+    if (!res.ok) return null;
+    const q = (await res.json()) as FeeQuote;
+    return typeof q?.fee_total_vsp === "number" ? q : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Submit a signed meta-tx via the async endpoint. Does NOT wait for
- *  receipt — returns the moment the relay server has the tx_hash. */
+ *  receipt — returns the moment the relay server has the tx_hash.
+ *  feeQuoteVsp is the total the user was shown (patch_protocol_gas_fee). */
 export async function submitRelayAsync(
   apiBase: string,
   request: Record<string, unknown>,
   signature: string,
   permit?: PermitData,
   feePermit?: PermitData,
+  feeQuoteVsp?: number,
 ): Promise<AsyncRelayResponse> {
   const body: Record<string, unknown> = { request, signature };
   if (permit) body.permit = permit;
   if (feePermit) body.fee_permit = feePermit;
+  if (typeof feeQuoteVsp === "number") body.fee_quote_vsp = feeQuoteVsp;
 
   const res = await fetch(`${apiBase}/relay/async`, {
     method: "POST",
