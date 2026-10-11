@@ -341,6 +341,10 @@ export interface FeeQuote {
   action_type?: string;
   collector?: string;
   valid_for_sec?: number;
+  /** patch_protocol_gas_fee_2: the gas to SIGN as request.gas (estimate × margin). Avalanche bills
+   *  max(gas used, limit / 2), so a generous constant here was billed at half of itself. */
+  gas_suggest?: number;
+  outer_limit?: number;
 }
 
 const feePolicyCache: { policy: FeePolicy | null; ts: number } = { policy: null, ts: 0 };

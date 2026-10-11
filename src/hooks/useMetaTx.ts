@@ -70,6 +70,23 @@ export function useMetaTx() {
       const nonce = await fetchNonce(API_BASE, userAddress);
       const deadline = Math.floor(Date.now() / 1000) + 300;
 
+      // The fee for THIS action, quoted by the relay from gas before anything is
+      // signed. Shown by the app (verisphere:fee-quote); sent back with the
+      // request so the relay can never charge more than what was displayed.
+      // patch_protocol_gas_fee_2: the quote also carries gas_suggest — the gas to
+      // sign as request.gas. Avalanche bills max(gas used, limit / 2), so the old
+      // constants (800k stake, 2M claim) were billed at half of themselves; the
+      // hook's gasLimit option is now only the fallback when the relay cannot quote.
+      const quote = await fetchFeeQuote(API_BASE, targetContract, calldata, userAddress);
+      window.dispatchEvent(
+        new CustomEvent("verisphere:fee-quote", {
+          detail: quote
+            ? { fee_vsp: quote.fee_total_vsp, fee_usd: quote.fee_usd, action_type: quote.action_type, available: true }
+            : { available: false },
+        }),
+      );
+      const requestGas = quote?.gas_suggest && quote.gas_suggest > 0 ? quote.gas_suggest : (options?.gasLimit ?? 1_500_000);
+
       // Sequential permit-nonce allocation: the fee permit and the posting
       // permit are both EIP-2612 permits on VSPToken and must use consecutive
       // nonces in execution order (fee, then posting), or the second reverts
@@ -84,7 +101,7 @@ export function useMetaTx() {
         from: userAddress,
         to: targetContract,
         value: BigInt(options?.value ?? 0),
-        gas: BigInt(options?.gasLimit ?? 1_500_000),
+        gas: BigInt(requestGas),  // patch_protocol_gas_fee_2
         nonce: BigInt(nonce),
         deadline,
         data: calldata,
@@ -116,18 +133,6 @@ export function useMetaTx() {
           needFeePermit = true; // signed AFTER the posting permit (nonce order)
         }
       }
-
-      // The fee for THIS action, quoted by the relay from gas before anything
-      // is signed. Shown by the app (verisphere:fee-quote); sent back with the
-      // request so the relay can never charge more than what was displayed.
-      const quote = await fetchFeeQuote(API_BASE, targetContract, calldata, userAddress);
-      window.dispatchEvent(
-        new CustomEvent("verisphere:fee-quote", {
-          detail: quote
-            ? { fee_vsp: quote.fee_total_vsp, fee_usd: quote.fee_usd, action_type: quote.action_type, available: true }
-            : { available: false },
-        }),
-      );
 
       // Every wallet request of this action goes through walletPrompt(): one at
       // a time, announced to the page until it resolves (lost-prompt fix).
