@@ -34,7 +34,7 @@ export function useCreateLink() {
       return {
         tokenAddress: addresses.VSPToken as Address,
         spender: addresses.PostRegistry as Address,
-        value: DEFAULT_POSTING_FEE * 10n,
+        value: DEFAULT_POSTING_FEE * 100n,  // patch_protocol_gas_fee: standing allowance for 100 posts, one prompt
       };
     },
     [userAddress, publicClient, walletClient, chain],

@@ -20,7 +20,8 @@ import { useWalletClient, usePublicClient, useAccount } from "wagmi";
 import type { Hex, Address } from "viem";
 import { getAddresses } from "../addresses/index.js";
 import { VSPTokenABI } from "../abis.js";
-import { fetchNonce, signPermit, submitRelayAsync, readPermitNonce, readEip712Domain } from "./relay.js";
+import { fetchNonce, signPermit, submitRelayAsync, readPermitNonce, readEip712Domain, fetchFeePolicy, fetchFeeQuote } from "./relay.js";
+import { walletPrompt } from "./walletPrompt.js";  // patch_protocol_gas_fee
 // patch_bundle04_5_p4_useMetaTx_rewire
 import { waitForTxConfirmation } from "./useTxConfirmation.js";
 import type { RelayResponse, PermitData } from "./types.js";
@@ -89,78 +90,82 @@ export function useMetaTx() {
         data: calldata,
       };
 
-      // One-time forwarder VSP allowance (ERC-2612 permit).
-      // patch_relay_permit: the fee permit used to execute EAGERLY via
-      // POST /api/mm/execute-permit — an MM-prefixed route retired by the
-      // Phase 4 410 (and its executor was MM-wallet-funded, which dies at
-      // Phase 5 anyway). The relay endpoint natively accepts fee_permit in
-      // the request body (relay-wallet-funded, guard-ordered), so the fee
-      // permit now RIDES THE RELAY REQUEST instead. Server executes
-      // body.permit (posting) BEFORE body.fee_permit, so nonces are:
-      // posting = base N, fee = N+1 — the reverse of the old eager order.
+      // Standing fee allowance (ERC-2612 permit) to the fee COLLECTOR.
+      // patch_protocol_gas_fee: the relay quotes and collects its own
+      // gas-indexed fee (no contract carries fee logic), so the spender is the
+      // relay wallet from /api/relay/fee-policy — the Forwarder only on an older
+      // backend without that endpoint. Size and renewal rule unchanged from the
+      // security review (C1 blast radius): 100 VSP, re-signed below 10 VSP.
+      // patch_relay_permit: the fee permit rides the relay request body; the
+      // server executes body.permit (posting) BEFORE body.fee_permit, so nonces
+      // are posting = base N, fee = N+1.
       let needFeePermit = false;
-      // security review 2026-09 (C1 blast radius): the standing fee permit
-      // was 10,000 VSP per user. With the forwarder drain fixed this is
-      // defense in depth — a bug in that path now costs at most 100 VSP per
-      // user, at the price of re-signing after ~20 relayed actions.
       const APPROVAL_AMOUNT = BigInt("100000000000000000000"); // 100 VSP
-      if (addresses.Forwarder) {
+      const policy = await fetchFeePolicy(API_BASE);
+      const feeSpender = (policy?.collector || addresses.Forwarder) as Address | undefined;
+      if (feeSpender) {
         const currentAllowance = (await publicClient.readContract({
           address: addresses.VSPToken as Address,
           abi: VSPTokenABI,
           functionName: "allowance",
-          args: [userAddress, addresses.Forwarder as Address],
+          args: [userAddress, feeSpender],
         })) as bigint;
 
         const MIN_ALLOWANCE = BigInt("10000000000000000000"); // 10 VSP
         if (currentAllowance < MIN_ALLOWANCE) {
-          window.dispatchEvent(
-            new CustomEvent("verisphere:toast", {
-              detail: {
-                message:
-                  "One-time approval: sign a permit to allow relay fees (no gas needed)",
-                type: "info",
-              },
-            }),
-          );
           needFeePermit = true; // signed AFTER the posting permit (nonce order)
         }
       }
+
+      // The fee for THIS action, quoted by the relay from gas before anything
+      // is signed. Shown by the app (verisphere:fee-quote); sent back with the
+      // request so the relay can never charge more than what was displayed.
+      const quote = await fetchFeeQuote(API_BASE, targetContract, calldata, userAddress);
+      window.dispatchEvent(
+        new CustomEvent("verisphere:fee-quote", {
+          detail: quote
+            ? { fee_vsp: quote.fee_total_vsp, fee_usd: quote.fee_usd, action_type: quote.action_type, available: true }
+            : { available: false },
+        }),
+      );
+
+      // Every wallet request of this action goes through walletPrompt(): one at
+      // a time, announced to the page until it resolves (lost-prompt fix).
+      const promptCount = (options?.permitSpec ? 1 : 0) + (needFeePermit ? 1 : 0) + 1;
+      let promptIndex = 0;
 
       // Posting permit (PostRegistry/StakeEngine spend) — signed HERE, after any
       // fee permit, so it gets the next sequential nonce (base+1 if the fee
       // permit fired, base otherwise). This is what kills the nonce collision.
       const postingPermit = options?.permitSpec
-        ? await signPermit({
-            walletClient,
-            publicClient,
-            tokenAddress: options.permitSpec.tokenAddress,
-            spender: options.permitSpec.spender,
-            value: options.permitSpec.value,
-            chainId: chain.id,
-            nonceOverride: permitNonce,
-          })
+        ? await walletPrompt("Allow the protocol to use your VSP (one-time)", ++promptIndex, promptCount, () =>
+            signPermit({
+              walletClient,
+              publicClient,
+              tokenAddress: options.permitSpec!.tokenAddress,
+              spender: options.permitSpec!.spender,
+              value: options.permitSpec!.value,
+              chainId: chain.id,
+              nonceOverride: permitNonce,
+            }),
+          )
         : undefined;
 
       // Fee permit rides the relay body (fee_permit); the server executes it
       // AFTER the posting permit, so it takes the next sequential nonce.
       const feePermit = needFeePermit
-        ? await signPermit({
-            walletClient,
-            publicClient,
-            tokenAddress: addresses.VSPToken as Address,
-            spender: addresses.Forwarder as Address,
-            value: APPROVAL_AMOUNT,
-            chainId: chain.id,
-            nonceOverride: postingPermit ? permitNonce + 1n : permitNonce,
-          })
+        ? await walletPrompt("Allow relay fees to be taken in VSP (one-time, 100 VSP standing)", ++promptIndex, promptCount, () =>
+            signPermit({
+              walletClient,
+              publicClient,
+              tokenAddress: addresses.VSPToken as Address,
+              spender: feeSpender as Address,
+              value: APPROVAL_AMOUNT,
+              chainId: chain.id,
+              nonceOverride: postingPermit ? permitNonce + 1n : permitNonce,
+            }),
+          )
         : undefined;
-
-      window.dispatchEvent(
-        new CustomEvent("verisphere:toast", {
-          detail: { message: "Confirm transaction in wallet", type: "info" },
-        }),
-      );
       // ForwardRequest EIP-712 domain read from the Forwarder's eip712Domain()
       // (EIP-5267), read-or-throw — same anti-drift guard as the permit domain.
       // Requires the deployed Forwarder to expose eip712Domain() (OZ
@@ -169,17 +174,22 @@ export function useMetaTx() {
         publicClient,
         addresses.Forwarder as Address,
       );
-      const signature = await walletClient.signTypedData({
-        domain: {
-          name: fwdDomain.name,
-          version: fwdDomain.version,
-          chainId: chain.id,
-          verifyingContract: addresses.Forwarder as Address,
-        },
-        types: FORWARD_REQUEST_TYPES,
-        primaryType: "ForwardRequest",
-        message: forwardRequest,
-      });
+      const actionLabel = quote
+        ? `Sign the action — relay fee ${quote.fee_total_vsp.toFixed(4)} VSP`
+        : "Sign the action";
+      const signature = await walletPrompt(actionLabel, ++promptIndex, promptCount, () =>
+        walletClient.signTypedData({
+          domain: {
+            name: fwdDomain.name,
+            version: fwdDomain.version,
+            chainId: chain.id,
+            verifyingContract: addresses.Forwarder as Address,
+          },
+          types: FORWARD_REQUEST_TYPES,
+          primaryType: "ForwardRequest",
+          message: forwardRequest,
+        }),
+      );
 
       // Convert bigints to numbers for JSON serialization
       const relayRequest = {
@@ -195,6 +205,7 @@ export function useMetaTx() {
         signature,
         postingPermit,
         feePermit,
+        quote?.fee_total_vsp,  // patch_protocol_gas_fee: never charged more than displayed
       );
 
       // Server pre-flight may detect a duplicate claim before submission.

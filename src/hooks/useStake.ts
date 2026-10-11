@@ -37,11 +37,15 @@ export function useStake() {
         API_BASE, userAddress, addresses.StakeEngine,
       );
       if (currentAllowance >= amountWei) return undefined;
-      window.dispatchEvent(new CustomEvent("verisphere:toast", { detail: { message: "Step 1: Approve token access (sign in wallet)", type: "info" } }));
+      // patch_protocol_gas_fee: a STANDING allowance (10,000 VSP, or twice this
+      // stake if larger) instead of twice each stake — one prompt, not one per
+      // raise. StakeEngine can only draw on it through a setStake the user
+      // signs, so a large allowance adds no exposure.
+      const STANDING = parseUnits("10000", 18);
       return {
         tokenAddress: addresses.VSPToken as Address,
         spender: addresses.StakeEngine as Address,
-        value: amountWei * 2n,
+        value: amountWei * 2n > STANDING ? amountWei * 2n : STANDING,
       };
     },
     [userAddress, publicClient, walletClient, chain],
